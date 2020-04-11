@@ -3,7 +3,7 @@ package main
 import (
 	"net/url"
 
-	"github.com/Individual-1/efd/efdtools"
+	"github.com/Individual-1/go-efd/efdtools"
 )
 
 func main() {
