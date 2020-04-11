@@ -2,7 +2,6 @@
 package efdtools
 
 import (
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,7 +9,6 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -33,64 +31,7 @@ var csrfCharset = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01
 const userAgent string = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:75.0) Gecko/20100101 Firefox/75.0"
 const layoutUS = "01/02/2006"
 
-// FilerType enumerates the types of targets that can be filtered for in efd search
-type FilerType = int
-
-// Enumeration of different users documents are available for in efd search
-const (
-	Senator       FilerType = 1
-	Candidate     FilerType = 4
-	FormerSenator FilerType = 5
-)
-
-// ReportType enumerates the types of reports available in efd search
-type ReportType = int
-
-// Enumeration of types of reports and documents available in efd search
-const (
-	Annual                    ReportType = 7
-	DueDateExtension          ReportType = 10
-	PeriodicTransactionReport ReportType = 11
-	BlindTrust                ReportType = 14
-	OtherDocuments            ReportType = 15
-)
-
-// SearchResult is a struct matching an individual result array from efdsearch
-// Each result is an array of 5 strings containing
-// First Name, Last Name, Full Name, File Link, and Date Submitted
-type SearchResult struct {
-	Valid         bool
-	FirstName     string
-	LastName      string
-	FullName      string
-	FileURL       *url.URL
-	DateSubmitted time.Time
-}
-
-// SearchResults is a struct matching the results json from efdsearch
-// Data is an array of SearchResult-type objects
-type SearchResults struct {
-	Draw            int        `json:"draw"`
-	RecordsTotal    int        `json:"recordsTotal"`
-	RecordsFiltered int        `json:"recordsFiltered"`
-	Data            [][]string `json:"data"`
-	Result          string     `json:"result"`
-}
-
-// PTRTransaction is a struct matching the output of a digital PTR report
-type PTRTransaction struct {
-	Date      time.Time
-	Owner     string
-	Ticker    string
-	AssetName string
-	AssetType string
-	Type      string
-	Amount    string
-	Comment   string
-	ReportID  string
-	Valid     bool
-}
-
+// anchorData is a struct containing common <a> anchor fields
 type anchorData struct {
 	HREF   string
 	Target string
@@ -100,12 +41,14 @@ type anchorData struct {
 func init() {
 	jar, _ = cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
 
-	var proxyURL, _ = url.Parse("http://172.31.208.1:8080")
-	var tr = &http.Transport{
-		Proxy:           http.ProxyURL(proxyURL),
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	client = &http.Client{Jar: jar, Transport: tr}
+	/*
+		var proxyURL, _ = url.Parse("http://172.31.208.1:8080")
+		var tr = &http.Transport{
+			Proxy:           http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	*/
+	client = &http.Client{Jar: jar}
 
 	const baseURLString string = "https://efdsearch.senate.gov"
 	const homeURLString string = "/search/home/"
@@ -262,7 +205,6 @@ func searchReportData(firstName string, lastName string, filerTypes []FilerType,
 // HandlePTRSearchResult takes a SearchResult struct and parses out transaction from the digital PTR
 func HandlePTRSearchResult(result SearchResult) ([]PTRTransaction, error) {
 	var ptrTransactions []PTRTransaction
-	reportID := path.Base(result.FileURL.Path)
 
 	resp, err := client.Get(result.FileURL.String())
 	if err != nil {
@@ -286,7 +228,6 @@ func HandlePTRSearchResult(result SearchResult) ([]PTRTransaction, error) {
 			return
 		}
 
-		ptrTransactions[i].ReportID = reportID
 		tds.EachWithBreak(func(j int, t *goquery.Selection) bool {
 
 			switch j {
