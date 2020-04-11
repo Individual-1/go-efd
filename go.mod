@@ -1,4 +1,4 @@
-module github.com/Individual-1/efd
+module github.com/Individual-1/go-efd
 
 go 1.14
 
