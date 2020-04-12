@@ -1,10 +1,14 @@
 package efdtools
 
 import (
-	"encoding/json"
+	"fmt"
 	"net/url"
+	"path/filepath"
 	"time"
 )
+
+// LayoutUS is the date format MM/DD/YYY used within efdtools
+const LayoutUS = "01/02/2006"
 
 // FilerType enumerates the types of targets that can be filtered for in efd search
 type FilerType = int
@@ -36,8 +40,23 @@ type SearchResult struct {
 	LastName      string
 	FullName      string
 	FileURL       *url.URL
+	ReportType    string
+	ReportID      string
 	DateSubmitted time.Time
 	Valid         bool
+}
+
+// GenPTRSearchResultPath generates a filepath for a given PTR SearchResult
+// Format is /%YYYY/%MM/%DD/ReportID
+func (s SearchResult) GenPTRSearchResultPath() string {
+	return filepath.Join(fmt.Sprintf("%04d", s.DateSubmitted.Year()), fmt.Sprintf("%02d", s.DateSubmitted.Month()),
+		fmt.Sprintf("%02d", s.DateSubmitted.Day()), s.ReportID)
+}
+
+// GenAnnualSearchResultPath generates a filepath for a given Annual SearchResult
+// Format is /%YYYY/ReportID
+func (s SearchResult) GenAnnualSearchResultPath() string {
+	return filepath.Join(fmt.Sprintf("%04d", s.DateSubmitted.Year()), s.ReportID)
 }
 
 // SearchResults is a struct matching the results json from efdsearch
@@ -53,13 +72,13 @@ type SearchResults struct {
 // PTRTransaction is a struct matching the output of a digital PTR report
 type PTRTransaction struct {
 	Date      time.Time `json:"date"`
-	Owner     string    `json:"owner"`
-	Ticker    string    `json:"ticker"`
-	AssetName string    `json:"assetname"`
-	AssetType string    `json:"assettype"`
-	Type      string    `json:"type"`
-	Amount    string    `json:"amount"`
-	Comment   string    `json:"comment"`
+	Owner     string    `json:"owner,omitempty"`
+	Ticker    string    `json:"ticker,omitempty"`
+	AssetName string    `json:"assetname,omitempty"`
+	AssetType string    `json:"assettype,omitempty"`
+	Type      string    `json:"type,omitempty"`
+	Amount    string    `json:"amount,omitempty"`
+	Comment   string    `json:"comment,omitempty"`
 	Valid     bool      `json:"-"`
 }
 
@@ -71,33 +90,4 @@ type PTRJson struct {
 	DateSubmitted time.Time        `json:"datesubmitted"`
 	ReportID      string           `json:"reportid"`
 	Transactions  []PTRTransaction `json:"transactions"`
-}
-
-// JSONURL is a wrapper for URL type with additional unmarshalling
-type JSONURL struct {
-	URL *url.URL
-}
-
-// MarshalJSON implement json marshalling for the URL type
-func (j JSONURL) MarshalJSON() ([]byte, error) {
-	s := j.URL.String()
-
-	return json.Marshal(s)
-}
-
-// UnmarshalJSON implements json unmarshalling for the URL type
-func (j JSONURL) UnmarshalJSON(b []byte) error {
-	var s string
-	err := json.Unmarshal(b, &s)
-	if err != nil {
-		return err
-	}
-
-	url, err := url.Parse(s)
-	if err != nil {
-		return err
-	}
-
-	j.URL = url
-	return nil
 }

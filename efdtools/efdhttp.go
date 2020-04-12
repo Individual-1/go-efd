@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +32,45 @@ var csrfCharset = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01
 
 const userAgent string = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:75.0) Gecko/20100101 Firefox/75.0"
 const layoutUS = "01/02/2006"
+
+// cellType enumerates the types of table cells we handle
+type ptrCellType = int
+
+// Enumeration of different table cells
+const (
+	// Do nothing
+	ignoreCell ptrCellType = 11
+
+	// Transaction Number
+	trNumCell ptrCellType = 1
+
+	// Transaction Date
+	trDateCell ptrCellType = 2
+
+	// Owner
+	ownerCell ptrCellType = 3
+
+	// Ticker
+	tickerCell ptrCellType = 4
+
+	// Asset Name
+	assetNameCell ptrCellType = 5
+
+	// Asset Type
+	assetTypeCell ptrCellType = 6
+
+	// Transaction Type
+	trTypeCell ptrCellType = 7
+
+	// Amount
+	amountCell ptrCellType = 8
+
+	// Comment
+	commentCell ptrCellType = 9
+
+	// Set Valid
+	validCell ptrCellType = 10
+)
 
 // anchorData is a struct containing common <a> anchor fields
 type anchorData struct {
@@ -97,12 +138,41 @@ func AcceptDisclaimer() error {
 
 // SearchSenatorPTR is a wrapper around searchReportData which retrieves a list of Senator's PTRs for a given timeframe
 func SearchSenatorPTR(startTime time.Time, endTime time.Time) ([]SearchResult, error) {
-	return searchReportData("", "", []FilerType{Senator}, "", []ReportType{PeriodicTransactionReport}, startTime, endTime)
+	return SearchReportData("", "", []FilerType{Senator}, "", []ReportType{PeriodicTransactionReport}, startTime, endTime)
 }
 
-// searchReportData calls the /search/report/data/ endpoint to get a list of records for the provided inputs
+// SearchReportData is a wrapper around searchReportDataPaged which automatically iterates over the full number of results
+func SearchReportData(firstName string, lastName string, filerTypes []FilerType, state string, reportTypes []ReportType,
+	startTime time.Time, endTime time.Time) ([]SearchResult, error) {
+	var finalResults []SearchResult
+	var err error
+	const length int = 100
+
+	start := 0
+	remainder := 1
+
+	// As long as (Total records - start - length) > 0, we have more records to read
+	for remainder > 0 {
+		var results []SearchResult
+		results, remainder, err = searchReportDataPaged(firstName, lastName, filerTypes, state, reportTypes, startTime, endTime, start, length)
+		if err != nil {
+			return nil, err
+		}
+
+		finalResults = append(finalResults, results...)
+
+		start = start + length
+	}
+
+	return finalResults, nil
+}
+
+// searchReportDataPaged calls the /search/report/data/ endpoint to get a list of records for the provided inputs
 // For both Time inputs, only Day, Month, and Year will be used
-func searchReportData(firstName string, lastName string, filerTypes []FilerType, state string, reportTypes []ReportType, startTime time.Time, endTime time.Time) ([]SearchResult, error) {
+// start and length indicate the result number to start from and length to go
+// Returns search results, number of records remaining, and error status
+func searchReportDataPaged(firstName string, lastName string, filerTypes []FilerType, state string, reportTypes []ReportType,
+	startTime time.Time, endTime time.Time, start int, length int) ([]SearchResult, int, error) {
 	csrfToken := genCSRFToken()
 
 	startTimeString := fmt.Sprintf("%02d/%02d/%04d 00:00:00",
@@ -127,12 +197,16 @@ func searchReportData(firstName string, lastName string, filerTypes []FilerType,
 	data.Set("submitted_start_date", startTimeString)
 	// End of date range to search (Format is MM/DD/YYYY HH:MM:SS)
 	data.Set("submitted_end_date", endTimeString)
+	// Starting entry to read from
+	data.Set("start", strconv.Itoa(start))
+	// Number of entries to read
+	data.Set("length", strconv.Itoa(length))
 	// CSRF token
 	data.Set("csrftoken", csrfToken)
 
 	req, err := http.NewRequest("POST", searchDataURL.String(), strings.NewReader(data.Encode()))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	req.Header.Add("Referer", searchURL.String())
@@ -144,32 +218,33 @@ func searchReportData(firstName string, lastName string, filerTypes []FilerType,
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	defer resp.Body.Close()
 
 	if resp.Header.Get("content-type") != "application/json" {
-		return nil, errors.New("Response content type is not json")
+		return nil, 0, errors.New("Response content type is not json")
 	}
 
 	var results SearchResults
 	var searchResults []SearchResult
 	err = json.NewDecoder(resp.Body).Decode(&results)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	} else if results.Result != "ok" {
-		return nil, errors.New("Search results endpoint returned error status")
+		return nil, 0, errors.New("Search results endpoint returned error status")
 	}
 
 	searchResults = make([]SearchResult, len(results.Data))
 	for i, result := range results.Data {
+		var sResult *SearchResult = &searchResults[i]
 		// If this array is not 5 strings long, then it is malformed
 		if len(result) != 5 {
 			break
 		}
 
-		searchResults[i].DateSubmitted, err = time.Parse(layoutUS, result[4])
+		sResult.DateSubmitted, err = time.Parse(layoutUS, result[4])
 		if err != nil {
 			break
 		}
@@ -184,12 +259,14 @@ func searchReportData(firstName string, lastName string, filerTypes []FilerType,
 			break
 		}
 
-		searchResults[i].FileURL = baseURL.ResolveReference(docURL)
-		searchResults[i].FirstName = strings.ToLower(result[0])
-		searchResults[i].LastName = strings.ToLower(result[1])
-		searchResults[i].FullName = strings.ToLower(result[2])
+		sResult.FileURL = baseURL.ResolveReference(docURL)
+		sResult.ReportType = anchor.Text
+		sResult.ReportID = path.Base(sResult.FileURL.Path)
+		sResult.FirstName = strings.ToLower(result[0])
+		sResult.LastName = strings.ToLower(result[1])
+		sResult.FullName = strings.ToLower(result[2])
 
-		searchResults[i].Valid = true
+		sResult.Valid = true
 	}
 
 	searchFiltered := searchResults[:0]
@@ -199,7 +276,9 @@ func searchReportData(firstName string, lastName string, filerTypes []FilerType,
 		}
 	}
 
-	return searchFiltered, nil
+	remainder := results.RecordsTotal - start - length
+
+	return searchFiltered, remainder, nil
 }
 
 // HandlePTRSearchResult takes a SearchResult struct and parses out transaction from the digital PTR
@@ -223,6 +302,7 @@ func HandlePTRSearchResult(result SearchResult) ([]PTRTransaction, error) {
 	trs := doc.Find("div.table-responsive table.table tbody tr")
 	ptrTransactions = make([]PTRTransaction, trs.Length())
 	trs.Each(func(i int, s *goquery.Selection) {
+		var ptrTransaction *PTRTransaction = &ptrTransactions[i]
 		tds := s.ChildrenFiltered("td")
 		if tds.Length() != 9 {
 			return
@@ -233,76 +313,32 @@ func HandlePTRSearchResult(result SearchResult) ([]PTRTransaction, error) {
 			switch j {
 			case 1:
 				// Transaction Date
-				tString, err := trimHTMLSelection(t)
-				if err != nil {
-					return false
-				}
-
-				ptrTransactions[i].Date, err = time.Parse(layoutUS, tString)
-				if err != nil {
-					return false
-				}
+				return handlePTRCell(ptrTransaction, t, trDateCell)
 			case 2:
 				// Owner
-				tString, err := trimHTMLSelection(t)
-				if err != nil {
-					return false
-				}
-
-				ptrTransactions[i].Owner = tString
+				return handlePTRCell(ptrTransaction, t, ownerCell)
 			case 3:
 				// Ticker
-				tString, err := trimHTMLSelection(t)
-				if err != nil {
-					return false
-				}
-
-				anchor, err := parseAnchor(tString)
-				if err != nil || anchor.Text == "" {
-					return false
-				}
-				ptrTransactions[i].Ticker = anchor.Text
+				return handlePTRCell(ptrTransaction, t, tickerCell)
 			case 4:
 				// Asset Name
-				tString, err := trimHTMLSelection(t)
-				if err != nil {
-					return false
-				}
-
-				ptrTransactions[i].AssetName = tString
+				return handlePTRCell(ptrTransaction, t, assetNameCell)
 			case 5:
 				// Asset Type
-				tString, err := trimHTMLSelection(t)
-				if err != nil {
-					return false
-				}
-
-				ptrTransactions[i].AssetType = tString
+				return handlePTRCell(ptrTransaction, t, assetTypeCell)
 			case 6:
 				// Transaction Type
-				tString, err := trimHTMLSelection(t)
-				if err != nil {
-					return false
-				}
-
-				ptrTransactions[i].Type = tString
+				return handlePTRCell(ptrTransaction, t, trTypeCell)
 			case 7:
 				// Amount
-				tString, err := trimHTMLSelection(t)
-				if err != nil {
-					return false
-				}
-
-				ptrTransactions[i].Amount = tString
+				return handlePTRCell(ptrTransaction, t, amountCell)
 			case 8:
 				// Comment
-				tString, err := trimHTMLSelection(t)
-				if err != nil {
+				if handlePTRCell(ptrTransaction, t, commentCell) {
+					handlePTRCell(ptrTransaction, t, validCell)
+				} else {
 					return false
 				}
-
-				ptrTransactions[i].Comment = tString
-				ptrTransactions[i].Valid = true
 			}
 
 			return true
@@ -319,6 +355,236 @@ func HandlePTRSearchResult(result SearchResult) ([]PTRTransaction, error) {
 	return ptrFiltered, nil
 }
 
+// HandleAnnualSearchResult takes a SearchResult struct and parses out transaction from the digital Annual report
+// Structured very similarly to HandlePTRSearchResult with some minor column ordering differences
+// TODO: Can we consolidate this and PTRSearchResult handler?
+// TODO: Handle scanned documents, maybe search for `div.img-wrap` ?
+func HandleAnnualSearchResult(result SearchResult) ([]PTRTransaction, error) {
+	var ptrTransactions []PTRTransaction
+	var regTransactions []PTRTransaction
+	var totalTransactions []PTRTransaction
+
+	resp, err := client.Get(result.FileURL.String())
+	if err != nil {
+		return nil, err
+	}
+
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	// Section 4a PTR table rows have 8 elements each
+	// Transaction #, Transaction Date, Owner, Ticker, Asset Name, Transaction Type, Amount, and Comment
+	// Section 4b Transactions have 8 elements each
+	// Transaction #, Owner, Ticker, Asset Name, Transaction Type, Transaction Date, Amount, and Comment
+	hdrs := doc.Find("section.card div.card-body h3.h4")
+	hdrs.Each(func(i int, s *goquery.Selection) {
+		title, _ := removeHTMLSelection(s)
+
+		// Handle modified PTR format in Annual Reports
+		if title == "Part 4a. Periodic Transaction Report Summary" {
+			section := s.Parent().Parent()
+			trs := section.Find("div.table-responsive table.table tbody tr")
+			ptrTransactions = make([]PTRTransaction, trs.Length())
+			trs.Each(func(u int, r *goquery.Selection) {
+				var ptrTransaction *PTRTransaction = &ptrTransactions[u]
+				tds := r.ChildrenFiltered("td")
+				if tds.Length() != 9 {
+					return
+				}
+
+				tds.EachWithBreak(func(j int, t *goquery.Selection) bool {
+
+					switch j {
+					case 0:
+						// whitespace
+					case 1:
+						// Transaction Number
+					case 2:
+						// Transaction Date
+						return handlePTRCell(ptrTransaction, t, trDateCell)
+					case 3:
+						// Owner
+						return handlePTRCell(ptrTransaction, t, ownerCell)
+					case 4:
+						// Ticker
+						return handlePTRCell(ptrTransaction, t, tickerCell)
+					case 5:
+						// Asset Name
+						return handlePTRCell(ptrTransaction, t, assetNameCell)
+					case 6:
+						// Transaction Type
+						return handlePTRCell(ptrTransaction, t, trTypeCell)
+					case 7:
+						// Amount
+						return handlePTRCell(ptrTransaction, t, amountCell)
+					case 8:
+						// Comment
+						if handlePTRCell(ptrTransaction, t, commentCell) {
+							handlePTRCell(ptrTransaction, t, validCell)
+						} else {
+							return false
+						}
+					}
+
+					return true
+				})
+			})
+		} else if title == "Part 4b. Transactions" {
+			section := s.Parent().Parent()
+			trs := section.Find("div.table-responsive table.table tbody tr")
+			regTransactions = make([]PTRTransaction, trs.Length())
+			trs.Each(func(u int, r *goquery.Selection) {
+				var regTransaction *PTRTransaction = &regTransactions[u]
+				tds := r.ChildrenFiltered("td")
+				if tds.Length() != 9 {
+					return
+				}
+
+				tds.EachWithBreak(func(j int, t *goquery.Selection) bool {
+
+					switch j {
+					case 0:
+						// whitespace
+					case 1:
+						// Transaction Number
+					case 2:
+						// Owner
+						return handlePTRCell(regTransaction, t, ownerCell)
+					case 3:
+						// Ticker
+						return handlePTRCell(regTransaction, t, tickerCell)
+					case 4:
+						// Asset Name
+						return handlePTRCell(regTransaction, t, assetNameCell)
+					case 5:
+						// Transaction Type
+						return handlePTRCell(regTransaction, t, trTypeCell)
+					case 6:
+						// Transaction Date
+						return handlePTRCell(regTransaction, t, trDateCell)
+					case 7:
+						// Amount
+						return handlePTRCell(regTransaction, t, amountCell)
+					case 8:
+						// Comment
+						if handlePTRCell(regTransaction, t, commentCell) {
+							handlePTRCell(regTransaction, t, validCell)
+						} else {
+							return false
+						}
+					}
+
+					return true
+				})
+			})
+		}
+	})
+
+	totalTransactions = append(ptrTransactions, regTransactions...)
+
+	totalFiltered := totalTransactions[:0]
+	for _, record := range totalTransactions {
+		if record.Valid {
+			totalFiltered = append(totalFiltered, record)
+		}
+	}
+
+	return totalFiltered, nil
+}
+
+func handlePTRCell(transaction *PTRTransaction, t *goquery.Selection, ct ptrCellType) bool {
+	switch ct {
+	case trNumCell:
+		// Transaction Number
+	case trDateCell:
+		// Transaction Date
+		tString, err := removeHTMLSelection(t)
+		if err != nil {
+			return false
+		}
+
+		transaction.Date, err = time.Parse(LayoutUS, tString)
+		if err != nil {
+			return false
+		}
+	case ownerCell:
+		// Owner
+		tString, err := removeHTMLSelection(t)
+		if err != nil {
+			return false
+		}
+
+		transaction.Owner = tString
+	case tickerCell:
+		// Ticker
+		tString, err := stripHTMLSelection(t)
+		if err != nil {
+			return false
+		}
+
+		if tString == "--" {
+			transaction.Ticker = tString
+		} else {
+			anchor, err := parseAnchor(tString)
+			if err != nil || anchor.Text == "" {
+				return false
+			}
+			transaction.Ticker = anchor.Text
+		}
+	case assetNameCell:
+		// Asset Name
+		tString, err := removeHTMLSelection(t)
+		if err != nil {
+			return false
+		}
+
+		transaction.AssetName = tString
+	case assetTypeCell:
+		// Asset Type
+		tString, err := removeHTMLSelection(t)
+		if err != nil {
+			return false
+		}
+
+		transaction.AssetType = tString
+	case trTypeCell:
+		// Transaction Type
+		tString, err := removeHTMLSelection(t)
+		if err != nil {
+			return false
+		}
+
+		transaction.Type = tString
+	case amountCell:
+		// Amount
+		tString, err := removeHTMLSelection(t)
+		if err != nil {
+			return false
+		}
+
+		transaction.Amount = tString
+	case commentCell:
+		// Comment
+		tString, err := removeHTMLSelection(t)
+		if err != nil {
+			return false
+		}
+
+		transaction.Comment = tString
+	case validCell:
+		// Set Valid
+		transaction.Valid = true
+	case ignoreCell:
+		// NOP
+	}
+
+	return true
+}
+
 // trimHTMLSelection takes a goquery selection and retrieves the innerHTML,
 // then filters out newlines and whitespace from either end
 func trimHTMLSelection(s *goquery.Selection) (string, error) {
@@ -327,7 +593,34 @@ func trimHTMLSelection(s *goquery.Selection) (string, error) {
 		return "", err
 	}
 
-	return strings.Trim(htmlString, "\n "), nil
+	return strings.TrimSpace(htmlString), nil
+}
+
+// stripHTMLSelection is a more aggressive whitespace remover
+// It replaces all consecutive whitespace with a single space
+func stripHTMLSelection(s *goquery.Selection) (string, error) {
+	htmlString, err := trimHTMLSelection(s)
+	if err != nil {
+		return "", err
+	}
+
+	re := regexp.MustCompile(`\s+`)
+	return re.ReplaceAllString(htmlString, " "), nil
+}
+
+// removeHTMLSelection goes a step further than strip and removed all tag-likes
+// This is very unsophisticated, but works for trivial cases
+func removeHTMLSelection(s *goquery.Selection) (string, error) {
+	htmlString, err := s.Html()
+	if err != nil {
+		return "", err
+	}
+
+	re := regexp.MustCompile(`<.*?>`)
+	space := regexp.MustCompile(`\s+`)
+	str := re.ReplaceAllString(htmlString, " ")
+	str = strings.TrimSpace(str)
+	return space.ReplaceAllString(str, " "), nil
 }
 
 // intArrayToString takes an array of integers and joins them into a delimited string
