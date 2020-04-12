@@ -1,5 +1,5 @@
-// Package efdtools implements helper functions for interacting with the efd search
-package efdtools
+// Package efd implements helper functions for interacting with the efd search and managing the results
+package efd
 
 import (
 	"encoding/json"
@@ -21,55 +21,45 @@ import (
 	"github.com/PuerkitoBio/goquery"
 )
 
-var jar http.CookieJar
-var client *http.Client
-var baseURL *url.URL
-var homeURL *url.URL
-var searchURL *url.URL
-var searchDataURL *url.URL
-
-var csrfCharset = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-
-const userAgent string = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:75.0) Gecko/20100101 Firefox/75.0"
-const layoutUS = "01/02/2006"
+var csrfCharset []rune = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 
 // cellType enumerates the types of table cells we handle
-type ptrCellType int
+type cellType int
 
 // Enumeration of different table cells
 const (
 	// Do nothing
-	ignoreCell ptrCellType = 11
+	ignoreCell cellType = 11
 
 	// Transaction Number
-	trNumCell ptrCellType = 1
+	trNumCell cellType = 1
 
 	// Transaction Date
-	trDateCell ptrCellType = 2
+	trDateCell cellType = 2
 
 	// Owner
-	ownerCell ptrCellType = 3
+	ownerCell cellType = 3
 
 	// Ticker
-	tickerCell ptrCellType = 4
+	tickerCell cellType = 4
 
 	// Asset Name
-	assetNameCell ptrCellType = 5
+	assetNameCell cellType = 5
 
 	// Asset Type
-	assetTypeCell ptrCellType = 6
+	assetTypeCell cellType = 6
 
 	// Transaction Type
-	trTypeCell ptrCellType = 7
+	trTypeCell cellType = 7
 
 	// Amount
-	amountCell ptrCellType = 8
+	amountCell cellType = 8
 
 	// Comment
-	commentCell ptrCellType = 9
+	commentCell cellType = 9
 
 	// Set Valid
-	validCell ptrCellType = 10
+	validCell cellType = 10
 )
 
 // anchorData is a struct containing common <a> anchor fields
@@ -79,17 +69,51 @@ type anchorData struct {
 	Text   string
 }
 
-func init() {
-	jar, _ = cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
+// EFDClient is a wrapper struct containing state and parameters
+// for interacting with the efdsearch system
+type EFDClient struct {
+	jar           http.CookieJar
+	client        *http.Client
+	baseURL       *url.URL
+	homeURL       *url.URL
+	searchURL     *url.URL
+	searchDataURL *url.URL
+	userAgent     string
+	dateLayout    string
 
-	/*
-		var proxyURL, _ = url.Parse("http://172.31.208.1:8080")
-		var tr = &http.Transport{
-			Proxy:           http.ProxyURL(proxyURL),
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		}
-	*/
-	client = &http.Client{Jar: jar}
+	// Indicates whether we have the cookies accepting the ToS
+	authed bool
+}
+
+// CreateEFDClient initializes and returns an EFDClient object
+// Empty inputs for useragent or datelayout will set default values
+func CreateEFDClient(userAgent string, dateLayout string) EFDClient {
+	var c EFDClient
+
+	if dateLayout == "" {
+		// Default to 01/02/2006
+		dateLayout = "01/02/2006"
+	}
+
+	if userAgent == "" {
+		// Default to Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:75.0) Gecko/20100101 Firefox/75.0
+		userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:75.0) Gecko/20100101 Firefox/75.0"
+	}
+
+	c.initParam(userAgent, dateLayout)
+
+	return c
+}
+
+// initParam is an initializer function for an EFDClient struct, it sets up some parameters of the client
+// and prepares the underlying HTTP client for use
+func (c *EFDClient) initParam(userAgent string, dateLayout string) {
+	c.dateLayout = dateLayout
+	c.userAgent = userAgent
+
+	c.jar, _ = cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
+
+	c.client = &http.Client{Jar: c.jar}
 
 	const baseURLString string = "https://efdsearch.senate.gov"
 	const homeURLString string = "/search/home/"
@@ -100,16 +124,19 @@ func init() {
 	var searchURLComponent, _ = url.Parse(searchURLString)
 	var searchDataURLComponent, _ = url.Parse(searchDataURLString)
 
-	baseURL, _ = url.Parse(baseURLString)
-	homeURL = baseURL.ResolveReference(homeURLComponent)
-	searchURL = baseURL.ResolveReference(searchURLComponent)
-	searchDataURL = baseURL.ResolveReference(searchDataURLComponent)
+	c.baseURL, _ = url.Parse(baseURLString)
+	c.homeURL = c.baseURL.ResolveReference(homeURLComponent)
+	c.searchURL = c.baseURL.ResolveReference(searchURLComponent)
+	c.searchDataURL = c.baseURL.ResolveReference(searchDataURLComponent)
+
+	c.authed = false
 }
 
 // AcceptDisclaimer goes through the process of accepting the initial disclaimer
-// and setting up session data for search
-func AcceptDisclaimer() error {
-	csrftoken, err := parseCSRFToken(homeURL)
+// and setting up session data for report retrieval
+// This doesn't need to be called explicitly, but can be
+func (c *EFDClient) AcceptDisclaimer() error {
+	csrftoken, err := c.parseCSRFToken(c.homeURL)
 	if err != nil {
 		return err
 	}
@@ -118,31 +145,33 @@ func AcceptDisclaimer() error {
 	data.Set("prohibition_agreement", "1")
 	data.Set("csrfmiddlewaretoken", csrftoken)
 
-	req, err := http.NewRequest("POST", homeURL.String(), strings.NewReader(data.Encode()))
+	req, err := http.NewRequest("POST", c.homeURL.String(), strings.NewReader(data.Encode()))
 	if err != nil {
 		return err
 	}
 
-	req.Header.Add("Referer", homeURL.String())
+	req.Header.Add("Referer", c.homeURL.String())
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Add("Content-Length", strconv.Itoa(len(data.Encode())))
-	req.Header.Add("User-Agent", userAgent)
+	req.Header.Add("User-Agent", c.userAgent)
 
-	_, err = client.Do(req)
+	_, err = c.client.Do(req)
 	if err != nil {
 		return err
 	}
+
+	c.authed = true
 
 	return nil
 }
 
 // SearchSenatorPTR is a wrapper around searchReportData which retrieves a list of Senator's PTRs for a given timeframe
-func SearchSenatorPTR(startTime time.Time, endTime time.Time) ([]SearchResult, error) {
-	return SearchReportData("", "", []FilerType{SenatorFiler}, "", []ReportType{PeriodicTransactionReport}, startTime, endTime)
+func (c *EFDClient) SearchSenatorPTR(startTime time.Time, endTime time.Time) ([]SearchResult, error) {
+	return c.SearchReportData("", "", []FilerType{SenatorFiler}, "", []ReportType{PeriodicTransactionReport}, startTime, endTime)
 }
 
 // SearchReportData is a wrapper around searchReportDataPaged which automatically iterates over the full number of results
-func SearchReportData(firstName string, lastName string, filerTypes []FilerType, state string, reportTypes []ReportType,
+func (c *EFDClient) SearchReportData(firstName string, lastName string, filerTypes []FilerType, state string, reportTypes []ReportType,
 	startTime time.Time, endTime time.Time) ([]SearchResult, error) {
 	var finalResults []SearchResult
 	var err error
@@ -154,7 +183,7 @@ func SearchReportData(firstName string, lastName string, filerTypes []FilerType,
 	// As long as (Total records - start - length) > 0, we have more records to read
 	for remainder > 0 {
 		var results []SearchResult
-		results, remainder, err = searchReportDataPaged(firstName, lastName, filerTypes, state, reportTypes, startTime, endTime, start, length)
+		results, remainder, err = c.searchReportDataPaged(firstName, lastName, filerTypes, state, reportTypes, startTime, endTime, start, length)
 		if err != nil {
 			return nil, err
 		}
@@ -171,9 +200,9 @@ func SearchReportData(firstName string, lastName string, filerTypes []FilerType,
 // For both Time inputs, only Day, Month, and Year will be used
 // start and length indicate the result number to start from and length to go
 // Returns search results, number of records remaining, and error status
-func searchReportDataPaged(firstName string, lastName string, filerTypes []FilerType, state string, reportTypes []ReportType,
+func (c *EFDClient) searchReportDataPaged(firstName string, lastName string, filerTypes []FilerType, state string, reportTypes []ReportType,
 	startTime time.Time, endTime time.Time, start int, length int) ([]SearchResult, int, error) {
-	csrfToken := genCSRFToken()
+	csrfToken := c.genCSRFToken()
 
 	startTimeString := fmt.Sprintf("%02d/%02d/%04d 00:00:00",
 		startTime.Month(), startTime.Day(), startTime.Year())
@@ -204,15 +233,15 @@ func searchReportDataPaged(firstName string, lastName string, filerTypes []Filer
 	// CSRF token
 	data.Set("csrftoken", csrfToken)
 
-	req, err := http.NewRequest("POST", searchDataURL.String(), strings.NewReader(data.Encode()))
+	req, err := http.NewRequest("POST", c.searchDataURL.String(), strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, 0, err
 	}
 
-	req.Header.Add("Referer", searchURL.String())
+	req.Header.Add("Referer", c.searchURL.String())
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Add("Content-Length", strconv.Itoa(len(data.Encode())))
-	req.Header.Add("User-Agent", userAgent)
+	req.Header.Add("User-Agent", c.userAgent)
 	req.Header.Add("X-CSRFToken", csrfToken)
 	req.AddCookie(&http.Cookie{Name: "csrftoken", Value: csrfToken})
 
@@ -244,12 +273,12 @@ func searchReportDataPaged(firstName string, lastName string, filerTypes []Filer
 			break
 		}
 
-		sResult.DateSubmitted, err = time.Parse(layoutUS, result[4])
+		sResult.DateSubmitted, err = time.Parse(c.dateLayout, result[4])
 		if err != nil {
 			break
 		}
 
-		anchor, err := parseAnchor(result[3])
+		anchor, err := c.parseAnchor(result[3])
 		if err != nil || anchor.HREF == "" {
 			break
 		}
@@ -259,7 +288,7 @@ func searchReportDataPaged(firstName string, lastName string, filerTypes []Filer
 			break
 		}
 
-		sResult.FileURL = baseURL.ResolveReference(docURL)
+		sResult.FileURL = c.baseURL.ResolveReference(docURL)
 		sResult.ReportFormat = URLToReportFormat(sResult.FileURL)
 
 		// Rewrite URL to be more useful if it is a paper copy
@@ -288,11 +317,38 @@ func searchReportDataPaged(firstName string, lastName string, filerTypes []Filer
 	return searchFiltered, remainder, nil
 }
 
-// HandlePTRSearchResult takes a SearchResult struct and parses out transaction from the digital PTR
-func HandlePTRSearchResult(result SearchResult) ([]PTRTransaction, error) {
-	var ptrTransactions []PTRTransaction
+// HandleResult is a wrapper around other handler types, selecting one based on the ReportType in the request
+// It returns a ParsedReport type
+func (c *EFDClient) HandleResult(result SearchResult) (ParsedReport, error) {
+	var parsedReport ParsedReport
+	var err error
 
-	resp, err := client.Get(result.FileURL.String())
+	parsedReport.ReportFormat = result.ReportFormat
+	switch result.ReportFormat {
+	case PTRFormat:
+		parsedReport.Transactions, err = c.HandlePTRSearchResult(result)
+	case AnnualFormat:
+		parsedReport.Transactions, err = c.HandleAnnualSearchResult(result)
+	case PaperFormat:
+		parsedReport.Pages, err = c.HandlePaperSearchResult(result)
+	}
+
+	return parsedReport, err
+}
+
+// HandlePTRSearchResult takes a SearchResult struct and parses out transaction from the digital PTR
+func (c *EFDClient) HandlePTRSearchResult(result SearchResult) ([]Transaction, error) {
+	var ptrTransactions []Transaction
+	var err error
+
+	if !c.authed {
+		err = c.AcceptDisclaimer()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	resp, err := c.client.Get(result.FileURL.String())
 	if err != nil {
 		return nil, err
 	}
@@ -307,9 +363,9 @@ func HandlePTRSearchResult(result SearchResult) ([]PTRTransaction, error) {
 	// PTR table rows have 9 elements each
 	// Transaction #, Transaction Date, Owner, Ticker, Asset Name, Asset Type, Transaction Type, Amount, and Comment
 	trs := doc.Find("div.table-responsive table.table tbody tr")
-	ptrTransactions = make([]PTRTransaction, trs.Length())
+	ptrTransactions = make([]Transaction, trs.Length())
 	trs.Each(func(i int, s *goquery.Selection) {
-		var ptrTransaction *PTRTransaction = &ptrTransactions[i]
+		var ptrTransaction *Transaction = &ptrTransactions[i]
 		tds := s.ChildrenFiltered("td")
 		if tds.Length() != 9 {
 			return
@@ -320,29 +376,29 @@ func HandlePTRSearchResult(result SearchResult) ([]PTRTransaction, error) {
 			switch j {
 			case 1:
 				// Transaction Date
-				return handlePTRCell(ptrTransaction, t, trDateCell)
+				return c.handleTransactionCell(ptrTransaction, t, trDateCell)
 			case 2:
 				// Owner
-				return handlePTRCell(ptrTransaction, t, ownerCell)
+				return c.handleTransactionCell(ptrTransaction, t, ownerCell)
 			case 3:
 				// Ticker
-				return handlePTRCell(ptrTransaction, t, tickerCell)
+				return c.handleTransactionCell(ptrTransaction, t, tickerCell)
 			case 4:
 				// Asset Name
-				return handlePTRCell(ptrTransaction, t, assetNameCell)
+				return c.handleTransactionCell(ptrTransaction, t, assetNameCell)
 			case 5:
 				// Asset Type
-				return handlePTRCell(ptrTransaction, t, assetTypeCell)
+				return c.handleTransactionCell(ptrTransaction, t, assetTypeCell)
 			case 6:
 				// Transaction Type
-				return handlePTRCell(ptrTransaction, t, trTypeCell)
+				return c.handleTransactionCell(ptrTransaction, t, trTypeCell)
 			case 7:
 				// Amount
-				return handlePTRCell(ptrTransaction, t, amountCell)
+				return c.handleTransactionCell(ptrTransaction, t, amountCell)
 			case 8:
 				// Comment
-				if handlePTRCell(ptrTransaction, t, commentCell) {
-					handlePTRCell(ptrTransaction, t, validCell)
+				if c.handleTransactionCell(ptrTransaction, t, commentCell) {
+					c.handleTransactionCell(ptrTransaction, t, validCell)
 				} else {
 					return false
 				}
@@ -365,12 +421,20 @@ func HandlePTRSearchResult(result SearchResult) ([]PTRTransaction, error) {
 // HandleAnnualSearchResult takes a SearchResult struct and parses out transaction from the digital Annual report
 // Structured very similarly to HandlePTRSearchResult with some minor column ordering differences
 // TODO: Can we consolidate this and PTRSearchResult handler?
-func HandleAnnualSearchResult(result SearchResult) ([]PTRTransaction, error) {
-	var ptrTransactions []PTRTransaction
-	var regTransactions []PTRTransaction
-	var totalTransactions []PTRTransaction
+func (c *EFDClient) HandleAnnualSearchResult(result SearchResult) ([]Transaction, error) {
+	var ptrTransactions []Transaction
+	var regTransactions []Transaction
+	var totalTransactions []Transaction
+	var err error
 
-	resp, err := client.Get(result.FileURL.String())
+	if !c.authed {
+		err = c.AcceptDisclaimer()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	resp, err := c.client.Get(result.FileURL.String())
 	if err != nil {
 		return nil, err
 	}
@@ -388,15 +452,15 @@ func HandleAnnualSearchResult(result SearchResult) ([]PTRTransaction, error) {
 	// Transaction #, Owner, Ticker, Asset Name, Transaction Type, Transaction Date, Amount, and Comment
 	hdrs := doc.Find("section.card div.card-body h3.h4")
 	hdrs.Each(func(i int, s *goquery.Selection) {
-		title, _ := removeHTMLSelection(s)
+		title, _ := c.removeHTMLSelection(s)
 
 		// Handle modified PTR format in Annual Reports
 		if title == "Part 4a. Periodic Transaction Report Summary" {
 			section := s.Parent().Parent()
 			trs := section.Find("div.table-responsive table.table tbody tr")
-			ptrTransactions = make([]PTRTransaction, trs.Length())
+			ptrTransactions = make([]Transaction, trs.Length())
 			trs.Each(func(u int, r *goquery.Selection) {
-				var ptrTransaction *PTRTransaction = &ptrTransactions[u]
+				var ptrTransaction *Transaction = &ptrTransactions[u]
 				tds := r.ChildrenFiltered("td")
 				if tds.Length() != 9 {
 					return
@@ -411,26 +475,26 @@ func HandleAnnualSearchResult(result SearchResult) ([]PTRTransaction, error) {
 						// Transaction Number
 					case 2:
 						// Transaction Date
-						return handlePTRCell(ptrTransaction, t, trDateCell)
+						return c.handleTransactionCell(ptrTransaction, t, trDateCell)
 					case 3:
 						// Owner
-						return handlePTRCell(ptrTransaction, t, ownerCell)
+						return c.handleTransactionCell(ptrTransaction, t, ownerCell)
 					case 4:
 						// Ticker
-						return handlePTRCell(ptrTransaction, t, tickerCell)
+						return c.handleTransactionCell(ptrTransaction, t, tickerCell)
 					case 5:
 						// Asset Name
-						return handlePTRCell(ptrTransaction, t, assetNameCell)
+						return c.handleTransactionCell(ptrTransaction, t, assetNameCell)
 					case 6:
 						// Transaction Type
-						return handlePTRCell(ptrTransaction, t, trTypeCell)
+						return c.handleTransactionCell(ptrTransaction, t, trTypeCell)
 					case 7:
 						// Amount
-						return handlePTRCell(ptrTransaction, t, amountCell)
+						return c.handleTransactionCell(ptrTransaction, t, amountCell)
 					case 8:
 						// Comment
-						if handlePTRCell(ptrTransaction, t, commentCell) {
-							handlePTRCell(ptrTransaction, t, validCell)
+						if c.handleTransactionCell(ptrTransaction, t, commentCell) {
+							c.handleTransactionCell(ptrTransaction, t, validCell)
 						} else {
 							return false
 						}
@@ -442,9 +506,9 @@ func HandleAnnualSearchResult(result SearchResult) ([]PTRTransaction, error) {
 		} else if title == "Part 4b. Transactions" {
 			section := s.Parent().Parent()
 			trs := section.Find("div.table-responsive table.table tbody tr")
-			regTransactions = make([]PTRTransaction, trs.Length())
+			regTransactions = make([]Transaction, trs.Length())
 			trs.Each(func(u int, r *goquery.Selection) {
-				var regTransaction *PTRTransaction = &regTransactions[u]
+				var regTransaction *Transaction = &regTransactions[u]
 				tds := r.ChildrenFiltered("td")
 				if tds.Length() != 9 {
 					return
@@ -459,26 +523,26 @@ func HandleAnnualSearchResult(result SearchResult) ([]PTRTransaction, error) {
 						// Transaction Number
 					case 2:
 						// Owner
-						return handlePTRCell(regTransaction, t, ownerCell)
+						return c.handleTransactionCell(regTransaction, t, ownerCell)
 					case 3:
 						// Ticker
-						return handlePTRCell(regTransaction, t, tickerCell)
+						return c.handleTransactionCell(regTransaction, t, tickerCell)
 					case 4:
 						// Asset Name
-						return handlePTRCell(regTransaction, t, assetNameCell)
+						return c.handleTransactionCell(regTransaction, t, assetNameCell)
 					case 5:
 						// Transaction Type
-						return handlePTRCell(regTransaction, t, trTypeCell)
+						return c.handleTransactionCell(regTransaction, t, trTypeCell)
 					case 6:
 						// Transaction Date
-						return handlePTRCell(regTransaction, t, trDateCell)
+						return c.handleTransactionCell(regTransaction, t, trDateCell)
 					case 7:
 						// Amount
-						return handlePTRCell(regTransaction, t, amountCell)
+						return c.handleTransactionCell(regTransaction, t, amountCell)
 					case 8:
 						// Comment
-						if handlePTRCell(regTransaction, t, commentCell) {
-							handlePTRCell(regTransaction, t, validCell)
+						if c.handleTransactionCell(regTransaction, t, commentCell) {
+							c.handleTransactionCell(regTransaction, t, validCell)
 						} else {
 							return false
 						}
@@ -503,14 +567,22 @@ func HandleAnnualSearchResult(result SearchResult) ([]PTRTransaction, error) {
 }
 
 // HandlePaperSearchResult takes a SearchResult struct and collects the page URLs from the scanned paper
-func HandlePaperSearchResult(result SearchResult) (PaperReport, error) {
+func (c *EFDClient) HandlePaperSearchResult(result SearchResult) (PaperReport, error) {
 	var paperReport PaperReport
+	var err error
+
+	if !c.authed {
+		err = c.AcceptDisclaimer()
+		if err != nil {
+			return paperReport, err
+		}
+	}
 
 	// We do this earlier, but just in case I guess?
 	fileURL := result.FileURL
 	fileURL.Path = strings.Replace(fileURL.Path, "view", "print", 1)
 
-	resp, err := client.Get(fileURL.String())
+	resp, err := c.client.Get(fileURL.String())
 	if err != nil {
 		return paperReport, err
 	}
@@ -544,24 +616,24 @@ func HandlePaperSearchResult(result SearchResult) (PaperReport, error) {
 	return paperReport, nil
 }
 
-func handlePTRCell(transaction *PTRTransaction, t *goquery.Selection, ct ptrCellType) bool {
+func (c EFDClient) handleTransactionCell(transaction *Transaction, t *goquery.Selection, ct cellType) bool {
 	switch ct {
 	case trNumCell:
 		// Transaction Number
 	case trDateCell:
 		// Transaction Date
-		tString, err := removeHTMLSelection(t)
+		tString, err := c.removeHTMLSelection(t)
 		if err != nil {
 			return false
 		}
 
-		transaction.Date, err = time.Parse(DateLayoutUS, tString)
+		transaction.Date, err = time.Parse(c.dateLayout, tString)
 		if err != nil {
 			return false
 		}
 	case ownerCell:
 		// Owner
-		tString, err := removeHTMLSelection(t)
+		tString, err := c.removeHTMLSelection(t)
 		if err != nil {
 			return false
 		}
@@ -569,7 +641,7 @@ func handlePTRCell(transaction *PTRTransaction, t *goquery.Selection, ct ptrCell
 		transaction.Owner = tString
 	case tickerCell:
 		// Ticker
-		tString, err := stripHTMLSelection(t)
+		tString, err := c.stripHTMLSelection(t)
 		if err != nil {
 			return false
 		}
@@ -577,7 +649,7 @@ func handlePTRCell(transaction *PTRTransaction, t *goquery.Selection, ct ptrCell
 		if tString == "--" {
 			transaction.Ticker = tString
 		} else {
-			anchor, err := parseAnchor(tString)
+			anchor, err := c.parseAnchor(tString)
 			if err != nil || anchor.Text == "" {
 				return false
 			}
@@ -585,7 +657,7 @@ func handlePTRCell(transaction *PTRTransaction, t *goquery.Selection, ct ptrCell
 		}
 	case assetNameCell:
 		// Asset Name
-		tString, err := removeHTMLSelection(t)
+		tString, err := c.removeHTMLSelection(t)
 		if err != nil {
 			return false
 		}
@@ -593,7 +665,7 @@ func handlePTRCell(transaction *PTRTransaction, t *goquery.Selection, ct ptrCell
 		transaction.AssetName = tString
 	case assetTypeCell:
 		// Asset Type
-		tString, err := removeHTMLSelection(t)
+		tString, err := c.removeHTMLSelection(t)
 		if err != nil {
 			return false
 		}
@@ -601,7 +673,7 @@ func handlePTRCell(transaction *PTRTransaction, t *goquery.Selection, ct ptrCell
 		transaction.AssetType = tString
 	case trTypeCell:
 		// Transaction Type
-		tString, err := removeHTMLSelection(t)
+		tString, err := c.removeHTMLSelection(t)
 		if err != nil {
 			return false
 		}
@@ -609,7 +681,7 @@ func handlePTRCell(transaction *PTRTransaction, t *goquery.Selection, ct ptrCell
 		transaction.Type = tString
 	case amountCell:
 		// Amount
-		tString, err := removeHTMLSelection(t)
+		tString, err := c.removeHTMLSelection(t)
 		if err != nil {
 			return false
 		}
@@ -617,7 +689,7 @@ func handlePTRCell(transaction *PTRTransaction, t *goquery.Selection, ct ptrCell
 		transaction.Amount = tString
 	case commentCell:
 		// Comment
-		tString, err := removeHTMLSelection(t)
+		tString, err := c.removeHTMLSelection(t)
 		if err != nil {
 			return false
 		}
@@ -635,7 +707,7 @@ func handlePTRCell(transaction *PTRTransaction, t *goquery.Selection, ct ptrCell
 
 // trimHTMLSelection takes a goquery selection and retrieves the innerHTML,
 // then filters out newlines and whitespace from either end
-func trimHTMLSelection(s *goquery.Selection) (string, error) {
+func (c EFDClient) trimHTMLSelection(s *goquery.Selection) (string, error) {
 	htmlString, err := s.Html()
 	if err != nil {
 		return "", err
@@ -646,8 +718,8 @@ func trimHTMLSelection(s *goquery.Selection) (string, error) {
 
 // stripHTMLSelection is a more aggressive whitespace remover
 // It replaces all consecutive whitespace with a single space
-func stripHTMLSelection(s *goquery.Selection) (string, error) {
-	htmlString, err := trimHTMLSelection(s)
+func (c EFDClient) stripHTMLSelection(s *goquery.Selection) (string, error) {
+	htmlString, err := c.trimHTMLSelection(s)
 	if err != nil {
 		return "", err
 	}
@@ -658,7 +730,7 @@ func stripHTMLSelection(s *goquery.Selection) (string, error) {
 
 // removeHTMLSelection goes a step further than strip and removed all tag-likes
 // This is very unsophisticated, but works for trivial cases
-func removeHTMLSelection(s *goquery.Selection) (string, error) {
+func (c EFDClient) removeHTMLSelection(s *goquery.Selection) (string, error) {
 	htmlString, err := s.Html()
 	if err != nil {
 		return "", err
@@ -673,7 +745,7 @@ func removeHTMLSelection(s *goquery.Selection) (string, error) {
 
 // genCSRFToken generates a token for use with the /search/report/data endpoint
 // These tokens are 64 characters alphanumeric including upper and lowercase alphabet
-func genCSRFToken() string {
+func (c EFDClient) genCSRFToken() string {
 	b := make([]rune, 64)
 	for i := range b {
 		b[i] = csrfCharset[rand.Intn(len(csrfCharset))]
@@ -683,7 +755,7 @@ func genCSRFToken() string {
 
 // parseCSRFToken parses the `csrfmiddlewaretoken` field from pages with form data
 // On success, the token string will be returned
-func parseCSRFToken(url *url.URL) (string, error) {
+func (c EFDClient) parseCSRFToken(url *url.URL) (string, error) {
 	var csrftoken string = ""
 
 	req, err := http.NewRequest("GET", url.String(), nil)
@@ -691,9 +763,9 @@ func parseCSRFToken(url *url.URL) (string, error) {
 		return csrftoken, err
 	}
 
-	req.Header.Add("User-Agent", userAgent)
+	req.Header.Add("User-Agent", c.userAgent)
 
-	resp, err := client.Do(req)
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -721,7 +793,7 @@ func parseCSRFToken(url *url.URL) (string, error) {
 
 // parseAnchor takes in a string and attempts to parse it as if it were an <a> anchor tag
 // On success it returns the structured contents of the field
-func parseAnchor(tag string) (anchorData, error) {
+func (c EFDClient) parseAnchor(tag string) (anchorData, error) {
 	var contents anchorData
 
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(tag))
@@ -739,15 +811,15 @@ func parseAnchor(tag string) (anchorData, error) {
 
 // parseHTMLAnchor takes in an html node and attempts to parse out its contents
 // On success it returns the structured contents of the field
-func parseHTMLAnchor(anchor *html.Node) (anchorData, error) {
+func (c EFDClient) parseHTMLAnchor(anchor *html.Node) (anchorData, error) {
 	var contents anchorData
 
 	if anchor.Type != html.ElementNode || anchor.Data != "a" {
 		return contents, errors.New("Node is not an anchor")
 	}
 
-	contents.HREF, _ = findAttributes(anchor.Attr, "href")
-	contents.Target, _ = findAttributes(anchor.Attr, "target")
+	contents.HREF, _ = c.findAttributes(anchor.Attr, "href")
+	contents.Target, _ = c.findAttributes(anchor.Attr, "target")
 
 	if anchor.FirstChild != nil {
 		contents.Text = anchor.FirstChild.Data
@@ -757,7 +829,7 @@ func parseHTMLAnchor(anchor *html.Node) (anchorData, error) {
 }
 
 // findAttributes iterates over an Attribute slice and attempts to find the corresponding key
-func findAttributes(attrs []html.Attribute, key string) (string, error) {
+func (c EFDClient) findAttributes(attrs []html.Attribute, key string) (string, error) {
 	for _, attr := range attrs {
 		if attr.Key == key {
 			return attr.Val, nil
@@ -768,9 +840,9 @@ func findAttributes(attrs []html.Attribute, key string) (string, error) {
 }
 
 // clearClient initializes an empty cookiejar and http client. This should be run to clear all client context.
-func clearClient() {
+func (c *EFDClient) clearClient() {
 	// Should be safe to run this multiple times
 	// There is no cookiejar.Clear type method so we need to create a new one to empty it out
-	jar, _ = cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
-	client = &http.Client{Jar: jar}
+	c.jar, _ = cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
+	c.client = &http.Client{Jar: c.jar}
 }

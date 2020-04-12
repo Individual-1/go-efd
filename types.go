@@ -1,4 +1,5 @@
-package efdtools
+// Package efd implements helper functions for interacting with the efd search and managing the results
+package efd
 
 import (
 	"fmt"
@@ -9,9 +10,6 @@ import (
 	"strings"
 	"time"
 )
-
-// DateLayoutUS is the date format MM/DD/YYY used within efdtools
-const DateLayoutUS = "01/02/2006"
 
 type intEnum int
 
@@ -135,12 +133,12 @@ func (s SearchResult) GenAnnualSearchResultPath() string {
 // ParsedReport is a small wrapper around possible report outputs
 type ParsedReport struct {
 	ReportFormat ReportFormat
-	Transactions []PTRTransaction
+	Transactions []Transaction
 	Pages        PaperReport
 }
 
-// PTRTransaction is a struct matching the output of a digital PTR report
-type PTRTransaction struct {
+// Transaction is a struct matching the output of a digital PTR report
+type Transaction struct {
 	Date      time.Time `json:"date"`
 	Owner     string    `json:"owner,omitempty"`
 	Ticker    string    `json:"ticker,omitempty"`

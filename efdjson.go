@@ -1,5 +1,5 @@
-// Package efdtools implements helper functions for interacting with the efd search
-package efdtools
+// Package efd implements helper functions for interacting with the efd search and managing the results
+package efd
 
 import (
 	"encoding/json"
@@ -36,28 +36,28 @@ func (j JSONURL) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// PTRJson is a combined format for PTRTransaction and SearchResult for JSON serialization
-type PTRJson struct {
-	FirstName     string           `json:"firstname"`
-	LastName      string           `json:"lastname"`
-	ReportName    string           `json:"reportname"`
-	PTRURL        JSONURL          `json:"ptrurl,string"`
-	DateSubmitted time.Time        `json:"datesubmitted"`
-	ReportFormat  ReportFormat     `json:"reportformat"`
-	ReportID      string           `json:"reportid"`
-	Transactions  []PTRTransaction `json:"transactions"`
-	Pages         []JSONURL        `json:"pages"`
+// ReportJson is a combined format for Transaction and SearchResult for JSON serialization
+type ReportJson struct {
+	FirstName     string        `json:"firstname"`
+	LastName      string        `json:"lastname"`
+	ReportName    string        `json:"reportname"`
+	ReportURL     JSONURL       `json:"reporturl,string"`
+	DateSubmitted time.Time     `json:"datesubmitted"`
+	ReportFormat  ReportFormat  `json:"reportformat"`
+	ReportID      string        `json:"reportid"`
+	Transactions  []Transaction `json:"transactions"`
+	Pages         []JSONURL     `json:"pages"`
 }
 
-// PTRToJSON takes a SearchResult object and results array, then marshals it into a JSON byte array
-func PTRToJSON(result SearchResult, parsedReport ParsedReport) ([]byte, error) {
-	var ptrj PTRJson
+// ReportToJson takes a SearchResult object and results array, then marshals it into a JSON byte array
+func ReportToJson(result SearchResult, parsedReport ParsedReport) ([]byte, error) {
+	var ptrj ReportJson
 
 	ptrj.FirstName = result.FirstName
 	ptrj.LastName = result.LastName
 	ptrj.ReportName = result.ReportName
 	ptrj.ReportFormat = result.ReportFormat
-	ptrj.PTRURL.URL = result.FileURL
+	ptrj.ReportURL.URL = result.FileURL
 	ptrj.DateSubmitted = result.DateSubmitted
 	ptrj.ReportID = result.ReportID
 
