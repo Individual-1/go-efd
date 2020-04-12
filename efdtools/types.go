@@ -86,6 +86,7 @@ type PTRTransaction struct {
 type PTRJson struct {
 	FirstName     string           `json:"firstname"`
 	LastName      string           `json:"lastname"`
+	ReportType    string           `json:"reporttype"`
 	PTRURL        JSONURL          `json:"ptrurl,string"`
 	DateSubmitted time.Time        `json:"datesubmitted"`
 	ReportID      string           `json:"reportid"`

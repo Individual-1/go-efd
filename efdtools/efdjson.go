@@ -42,6 +42,7 @@ func PTRToJSON(result SearchResult, ptrs []PTRTransaction) ([]byte, error) {
 	ptrj.Transactions = ptrs
 	ptrj.FirstName = result.FirstName
 	ptrj.LastName = result.LastName
+	ptrj.ReportType = result.ReportType
 	ptrj.PTRURL.URL = result.FileURL
 	ptrj.DateSubmitted = result.DateSubmitted
 	ptrj.ReportID = result.ReportID
