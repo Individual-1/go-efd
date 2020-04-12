@@ -11,22 +11,15 @@ import (
 )
 
 func main() {
-	var ptrSearchResults []efdtools.SearchResult
-	var annualSearchResults []efdtools.SearchResult
+	var searchResults []efdtools.SearchResult
 	var err error
-	filerType := []efdtools.FilerType{efdtools.Senator}
+	filerType := []efdtools.FilerType{efdtools.SenatorFiler}
 
-	startTime, _ := time.Parse(efdtools.LayoutUS, "01/01/2020")
-	endTime, _ := time.Parse(efdtools.LayoutUS, "04/30/2020")
+	startTime, _ := time.Parse(efdtools.DateLayoutUS, "01/01/2020")
+	endTime, _ := time.Parse(efdtools.DateLayoutUS, "04/30/2020")
 
-	ptrSearchResults, err = efdtools.SearchReportData("", "", filerType, "",
-		[]efdtools.ReportType{efdtools.PeriodicTransactionReport}, startTime, endTime)
-	if err != nil {
-		return
-	}
-
-	annualSearchResults, err = efdtools.SearchReportData("", "", filerType, "",
-		[]efdtools.ReportType{efdtools.Annual}, startTime, endTime)
+	searchResults, err = efdtools.SearchReportData("", "", filerType, "",
+		[]efdtools.ReportType{efdtools.AnnualReport}, startTime, endTime)
 	if err != nil {
 		return
 	}
@@ -42,40 +35,28 @@ func main() {
 	if err != nil {
 		cwd = "./"
 	}
-	// Iterate over PTRs first
-	for _, result := range ptrSearchResults {
+
+	for _, result := range searchResults {
 		jsonpath := filepath.Join(cwd, "data", fmt.Sprintf("%s.json", result.GenPTRSearchResultPath()))
-
 		if !fileExists(jsonpath) {
-			ptrs, err := efdtools.HandlePTRSearchResult(result)
+			var parsedReport efdtools.ParsedReport
+			var err error
+
+			parsedReport.ReportFormat = result.ReportFormat
+			switch result.ReportFormat {
+			case efdtools.PTRFormat:
+				parsedReport.Transactions, err = efdtools.HandlePTRSearchResult(result)
+			case efdtools.AnnualFormat:
+				parsedReport.Transactions, err = efdtools.HandleAnnualSearchResult(result)
+			case efdtools.PaperFormat:
+				parsedReport.Pages, err = efdtools.HandlePaperSearchResult(result)
+			}
 			if err != nil {
 				fmt.Println(err)
 				continue
 			}
 
-			js, err := efdtools.PTRToJSON(result, ptrs)
-			if err != nil {
-				fmt.Println(err)
-				continue
-			}
-
-			os.MkdirAll(filepath.Dir(jsonpath), os.ModePerm)
-			ioutil.WriteFile(jsonpath, js, 0644)
-		}
-	}
-
-	// Then do Annual reports
-	for _, result := range annualSearchResults {
-		jsonpath := filepath.Join(cwd, "data", fmt.Sprintf("%s.json", result.GenAnnualSearchResultPath()))
-
-		if !fileExists(jsonpath) {
-			ptrs, err := efdtools.HandleAnnualSearchResult(result)
-			if err != nil {
-				fmt.Println(err)
-				continue
-			}
-
-			js, err := efdtools.PTRToJSON(result, ptrs)
+			js, err := efdtools.PTRToJSON(result, parsedReport)
 			if err != nil {
 				fmt.Println(err)
 				continue

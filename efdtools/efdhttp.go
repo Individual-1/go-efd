@@ -34,7 +34,7 @@ const userAgent string = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:75.0) Gec
 const layoutUS = "01/02/2006"
 
 // cellType enumerates the types of table cells we handle
-type ptrCellType = int
+type ptrCellType int
 
 // Enumeration of different table cells
 const (
@@ -138,7 +138,7 @@ func AcceptDisclaimer() error {
 
 // SearchSenatorPTR is a wrapper around searchReportData which retrieves a list of Senator's PTRs for a given timeframe
 func SearchSenatorPTR(startTime time.Time, endTime time.Time) ([]SearchResult, error) {
-	return SearchReportData("", "", []FilerType{Senator}, "", []ReportType{PeriodicTransactionReport}, startTime, endTime)
+	return SearchReportData("", "", []FilerType{SenatorFiler}, "", []ReportType{PeriodicTransactionReport}, startTime, endTime)
 }
 
 // SearchReportData is a wrapper around searchReportDataPaged which automatically iterates over the full number of results
@@ -188,11 +188,11 @@ func searchReportDataPaged(firstName string, lastName string, filerTypes []Filer
 	// Target last name
 	data.Set("last_name", lastName)
 	// Target filer type (Format is [1, 2])
-	data.Set("filer_types", intArrayToString(filerTypes, ","))
+	data.Set("filer_types", intEnumArrayToString(filerTypes, ","))
 	// Target state represented
 	data.Set("senator_state", state)
 	// Report type (Format is [11, 12])
-	data.Set("report_types", intArrayToString(reportTypes, ","))
+	data.Set("report_types", intEnumArrayToString(reportTypes, ","))
 	// Beginning of date range to search (Format is MM/DD/YYYY HH:MM:SS)
 	data.Set("submitted_start_date", startTimeString)
 	// End of date range to search (Format is MM/DD/YYYY HH:MM:SS)
@@ -260,7 +260,14 @@ func searchReportDataPaged(firstName string, lastName string, filerTypes []Filer
 		}
 
 		sResult.FileURL = baseURL.ResolveReference(docURL)
-		sResult.ReportType = anchor.Text
+		sResult.ReportFormat = URLToReportFormat(sResult.FileURL)
+
+		// Rewrite URL to be more useful if it is a paper copy
+		if sResult.ReportFormat == PaperFormat {
+			sResult.FileURL.Path = strings.Replace(sResult.FileURL.Path, "view", "print", 1)
+		}
+
+		sResult.ReportName = anchor.Text
 		sResult.ReportID = path.Base(sResult.FileURL.Path)
 		sResult.FirstName = strings.ToLower(result[0])
 		sResult.LastName = strings.ToLower(result[1])
@@ -358,7 +365,6 @@ func HandlePTRSearchResult(result SearchResult) ([]PTRTransaction, error) {
 // HandleAnnualSearchResult takes a SearchResult struct and parses out transaction from the digital Annual report
 // Structured very similarly to HandlePTRSearchResult with some minor column ordering differences
 // TODO: Can we consolidate this and PTRSearchResult handler?
-// TODO: Handle scanned documents, maybe search for `div.img-wrap` ?
 func HandleAnnualSearchResult(result SearchResult) ([]PTRTransaction, error) {
 	var ptrTransactions []PTRTransaction
 	var regTransactions []PTRTransaction
@@ -496,6 +502,48 @@ func HandleAnnualSearchResult(result SearchResult) ([]PTRTransaction, error) {
 	return totalFiltered, nil
 }
 
+// HandlePaperSearchResult takes a SearchResult struct and collects the page URLs from the scanned paper
+func HandlePaperSearchResult(result SearchResult) (PaperReport, error) {
+	var paperReport PaperReport
+
+	// We do this earlier, but just in case I guess?
+	fileURL := result.FileURL
+	fileURL.Path = strings.Replace(fileURL.Path, "view", "print", 1)
+
+	resp, err := client.Get(fileURL.String())
+	if err != nil {
+		return paperReport, err
+	}
+
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return paperReport, err
+	}
+
+	pages := doc.Find("img.filingImage")
+	paperReport.PageURLs = make([]*url.URL, pages.Length())
+	pages.Each(func(i int, s *goquery.Selection) {
+		var pageURL *url.URL
+
+		pageURLString, exists := s.Attr("src")
+		if !exists {
+			return
+		}
+
+		pageURL, err = url.Parse(pageURLString)
+		if err != nil {
+			return
+		}
+
+		paperReport.PageURLs[i] = pageURL
+		return
+	})
+
+	return paperReport, nil
+}
+
 func handlePTRCell(transaction *PTRTransaction, t *goquery.Selection, ct ptrCellType) bool {
 	switch ct {
 	case trNumCell:
@@ -507,7 +555,7 @@ func handlePTRCell(transaction *PTRTransaction, t *goquery.Selection, ct ptrCell
 			return false
 		}
 
-		transaction.Date, err = time.Parse(LayoutUS, tString)
+		transaction.Date, err = time.Parse(DateLayoutUS, tString)
 		if err != nil {
 			return false
 		}
@@ -621,18 +669,6 @@ func removeHTMLSelection(s *goquery.Selection) (string, error) {
 	str := re.ReplaceAllString(htmlString, " ")
 	str = strings.TrimSpace(str)
 	return space.ReplaceAllString(str, " "), nil
-}
-
-// intArrayToString takes an array of integers and joins them into a delimited string
-// This is primary used for joining ReportType and FilerType arrays to usable formats
-// This is not necessarily particularly performant
-func intArrayToString(ints []int, delim string) string {
-	strs := []string{}
-	for _, val := range ints {
-		strs = append(strs, strconv.Itoa(val))
-	}
-
-	return "[" + strings.Join(strs, delim) + "]"
 }
 
 // genCSRFToken generates a token for use with the /search/report/data endpoint
