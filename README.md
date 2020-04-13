@@ -10,10 +10,10 @@ Import the package into your project then, use an `EFDClient` to interact with t
 ```
 import "github.com/Individual-1/go-efd"
 
-var client efd.EFDClient = efd.CreateEFDClient("My user agent", "My date format">)
+var client efd.EFDClient = efd.CreateEFDClient("My user agent", "My date format")
 ```
 
-This client can then be used to search and retrieve results from via `SearchReportData` and `HandleResult` methods.
+This client can then be used to search and retrieve results from EFD via `SearchReportData` and `HandleResult` methods.
 
 ```
 client.SearchReportData("First name", "Last name", []efd.FilterType{SenatorFiler}, "State", 

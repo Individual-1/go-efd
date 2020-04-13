@@ -349,7 +349,8 @@ func (c *EFDClient) HandlePTRSearchResult(result SearchResult) ([]Transaction, e
 	}
 
 	resp, err := c.client.Get(result.FileURL.String())
-	if err != nil {
+	if err != nil || resp.StatusCode == http.StatusForbidden {
+		c.authed = false
 		return nil, err
 	}
 
@@ -435,7 +436,8 @@ func (c *EFDClient) HandleAnnualSearchResult(result SearchResult) ([]Transaction
 	}
 
 	resp, err := c.client.Get(result.FileURL.String())
-	if err != nil {
+	if err != nil || resp.StatusCode == http.StatusForbidden {
+		c.authed = false
 		return nil, err
 	}
 
@@ -583,7 +585,8 @@ func (c *EFDClient) HandlePaperSearchResult(result SearchResult) (PaperReport, e
 	fileURL.Path = strings.Replace(fileURL.Path, "view", "print", 1)
 
 	resp, err := c.client.Get(fileURL.String())
-	if err != nil {
+	if err != nil || resp.StatusCode == http.StatusForbidden {
+		c.authed = false
 		return paperReport, err
 	}
 
